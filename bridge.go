@@ -1,29 +1,30 @@
-package bridge;
+package bridge
 
 import (
-		"log"
-		"errors"
-		"io"
-		"time"
-		"go.bug.st/serial.v1"
-		"github.com/snksoft/crc"
+	"bytes"
+	"errors"
+	"github.com/snksoft/crc"
+	"go.bug.st/serial.v1"
+	"io"
+	"log"
+	"time"
 )
 
 type Message struct {
-	Mac [6]byte
+	Mac  [6]byte
 	Data []byte
 }
 
-type client struct {
-	mac [6]byte
+type peer struct {
+	mac         [6]byte
 	wifiChannel uint8
 }
 
 type Bridge struct {
 	connection io.ReadWriteCloser
-	clients []client
-	Inbox <-chan Message
-	Outbox chan<- Message
+	peers      []peer
+	Inbox      <-chan Message
+	Outbox     chan<- Message
 }
 
 func (b Bridge) Connect(portName string) error {
@@ -36,7 +37,7 @@ func (b Bridge) Connect(portName string) error {
 			return err
 		}
 		b.connection = con
-		log.Printf("Opened Serial port\n");
+		log.Printf("Opened Serial port\n")
 		return b.setupBridge()
 	}
 	return errors.New("Already initialized")
@@ -44,31 +45,57 @@ func (b Bridge) Connect(portName string) error {
 
 func (b Bridge) Close() error {
 	if b.connection != nil {
+		close(b.Outbox)
 		b.connection.Close()
 		b.connection = nil
 	}
 	return nil
 }
 
+func (b Bridge) AddPeer(mac [6]byte, wifiChannel uint8) error {
+	if len(b.peers) > 30 {
+		return errors.New("ESP 8266 cannot handle more than 30 peers")
+	}
+	newPeer := peer{wifiChannel: wifiChannel}
+	copy(newPeer.mac[:], mac[:])
+	b.peers = append(b.peers)
+	return nil
+}
+
+func (b Bridge) RemovePeer(mac [6]byte) {
+	// find peer
+	peerIndex := -1
+	for i := 0; i < len(b.peers); i++ {
+		if bytes.Equal(b.peers[i].mac[:], mac[:]) {
+			peerIndex = i
+			break
+		}
+	}
+	if peerIndex != -1 {
+		// shift the last peer entry to replace the deleted peer
+		// and truncate the slice
+		b.peers[peerIndex] = b.peers[len(b.peers)-1]
+		b.peers = b.peers[:len(b.peers)-1]
+	}
+}
+
 func (b Bridge) setupBridge() error {
 	if b.connection == nil {
 		panic("setup called without a connection")
 	}
-	bytesRead := make(chan byte, 1024) 
+	bytesRead := make(chan byte, 1024)
 	inbox := make(chan Message, 64)
 	outbox := make(chan Message, 64)
-	b.Inbox = inbox
-	b.Outbox = outbox 
 	reset := make(chan bool)
-	sendSignatures := make(chan bool)
+	sendPeers := make(chan bool)
 	go readBytes(b.connection, bytesRead)
-	go reassemblMessages(bytesRead, reset, sendSignatures, inbox)
-	go b.handleResets(reset, sendSignatures)
-	go handleNewMessages(b.connection, outbox)
+	go reassembleMessages(bytesRead, reset, sendPeers, inbox)
+	go writeBytes(&b, outbox, reset, sendPeers)
+
+	b.Inbox = inbox
+	b.Outbox = outbox
 	return nil
 }
-
-
 
 func readBytes(source io.ReadWriteCloser, output chan<- byte) {
 	defer close(output)
@@ -88,7 +115,7 @@ func readBytes(source io.ReadWriteCloser, output chan<- byte) {
 func getBytes(input <-chan byte, len int) ([]byte, bool) {
 	result := make([]byte, len)
 	for i := 0; i < len; i++ {
-		b, more := <- input
+		b, more := <-input
 		if !more {
 			return nil, false
 		}
@@ -97,8 +124,8 @@ func getBytes(input <-chan byte, len int) ([]byte, bool) {
 	return result, true
 }
 
-func reassemblMessages(input <-chan byte, reset chan<- bool, sendSignatures chan<- bool, output chan<- Message) {
-	activationHeader := [...]byte{0x11, 0x22, 0x33, 0x44, 0x55,0x66,0x77}
+func reassembleMessages(input <-chan byte, reset chan<- bool, sendPeers chan<- bool, output chan<- Message) {
+	activationHeader := [...]byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77}
 	crcFunction := crc.NewHashWithTable(crc.NewTable(crc.XMODEM))
 
 	var active = false
@@ -106,11 +133,11 @@ func reassemblMessages(input <-chan byte, reset chan<- bool, sendSignatures chan
 	for {
 		if !active {
 			log.Println("Waiting for connection to bridge")
-			reset <- true 
+			reset <- true
 			var detected = 0
 			for detected < len(activationHeader) {
 				select {
-				case b, running := <- input:
+				case b, running := <-input:
 					if !running {
 						return
 					}
@@ -119,9 +146,9 @@ func reassemblMessages(input <-chan byte, reset chan<- bool, sendSignatures chan
 					} else {
 						detected = 0
 					}
-				case <- time.After(10 * time.Second):
+				case <-time.After(10 * time.Second):
 					log.Println("Sending reset again")
-					reset <- true 
+					reset <- true
 				}
 			}
 			log.Println("Bridge connected")
@@ -132,11 +159,11 @@ func reassemblMessages(input <-chan byte, reset chan<- bool, sendSignatures chan
 			return
 		}
 		switch {
-		case header[0] == 0x55 && header[1] == 0x44 :
+		case header[0] == 0x55 && header[1] == 0x44:
 			// new message, read next bytes for the structure
 			mac, running := getBytes(input, 6)
 			crc, running := getBytes(input, 2)
-			size, running := <- input 
+			size, running := <-input
 			if !running {
 				return
 			}
@@ -152,7 +179,7 @@ func reassemblMessages(input <-chan byte, reset chan<- bool, sendSignatures chan
 				continue
 			}
 			log.Println("Posting new message")
-			msg := Message {
+			msg := Message{
 				Data: data,
 			}
 			copy(msg.Mac[:], mac)
@@ -160,7 +187,7 @@ func reassemblMessages(input <-chan byte, reset chan<- bool, sendSignatures chan
 		case header[0] == 0x44 && header[1] == 0x33:
 			// request to get all peers (restart of the node for example)
 			log.Println("Request to get all peers received")
-			sendSignatures <- true
+			sendPeers <- true
 		default:
 			log.Printf("Resetting stream due to unexpected message header %v\n", header)
 			active = false
@@ -170,50 +197,40 @@ func reassemblMessages(input <-chan byte, reset chan<- bool, sendSignatures chan
 
 }
 
-func assureWritten(target io.ReadWriteCloser, data []byte) error {
-	index := 0 
+func assureWritten(target io.ReadWriteCloser, data []byte) {
+	index := 0
 	for index < len(data) {
 		written, failed := target.Write(data[index:])
 		if failed != nil {
-			return failed
+			log.Fatal(failed)
 		}
 		index += written
 	}
-	return nil
 }
 
-func (b Bridge) handleResets(reset <-chan bool, sendPeers <-chan bool) {
-	resetMessage := []byte{0x42, 0x42, 0x42, 0x42} 
+func writeBytes(b *Bridge, box <-chan Message, reset <-chan bool, sendPeers <-chan bool) {
+	sendMessage := []byte{0x22, 0x11}
+	resetMessage := []byte{0x42, 0x42, 0x42, 0x42}
 	addPeer := []byte{0x33, 0x22}
+	crcFunction := crc.NewHashWithTable(crc.NewTable(crc.XMODEM))
+
 	for {
 		select {
-		case <- reset:
-			err := assureWritten(b.connection, resetMessage)
-			if err != nil{
-				log.Fatal(err)
+		case msg := <-box:
+			assureWritten(b.connection, sendMessage)
+			assureWritten(b.connection, msg.Mac[:])
+			crc := crcFunction.CalculateCRC(msg.Data)
+			assureWritten(b.connection, []byte{uint8(crc & 0xFF), uint8((crc >> 8) & 0xFF)})
+			assureWritten(b.connection, []byte{uint8(len(msg.Data))})
+			assureWritten(b.connection, msg.Data)
+		case <-reset:
+			assureWritten(b.connection, resetMessage)
+		case <-sendPeers:
+			for _, p := range b.peers {
+				assureWritten(b.connection, addPeer)
+				assureWritten(b.connection, p.mac[:])
+				assureWritten(b.connection, []byte{p.wifiChannel})
 			}
-		case <- sendPeers:
-			for _, p := range b.clients {
-				msg := addPeer
-				msg = append(msg, p.mac[:]...)
-				msg = append(msg, p.wifiChannel)
-				err := assureWritten(b.connection, msg)
-				if err != nil{
-					log.Fatal(err)
-				}
-			}
-
 		}
-	}
-}
-
-func handleNewMessages(target io.ReadWriteCloser, box <-chan Message) {
-	sendMessage := []byte{0x22, 0x11}
-	for msg := range box {
-		bytes := sendMessage
-		bytes = append(bytes, msg.Mac[:]...)
-		bytes = append(bytes, uint8(len(msg.Data)))
-		bytes = append(bytes, msg.Data...)
-		assureWritten(target, bytes)
 	}
 }
