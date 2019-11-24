@@ -189,14 +189,12 @@ func reassembleMessages(input <-chan byte, active *bool, reset chan<- bool, send
 			if !running {
 				return
 			}
-			log.Printf("Got data: %v", data)
 			dataCRC := crcFunction.CalculateCRC(data)
 			if (uint16(crc[0]) | (uint16(crc[1]) << 8)) != uint16(dataCRC) {
 				log.Println("Resetting stream due to crc failure")
 				*active = false
 				continue
 			}
-			log.Println("Posting new message")
 			msg := Message{
 				Data: data,
 			}
