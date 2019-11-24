@@ -1,13 +1,13 @@
 {
 	"folders": [
 		{
-			"path": "go-bridge"
-		},
-		{
 			"path": "esp8266-bridge"
 		},
 		{
 			"path": "example"
+		},
+		{
+			"path": "."
 		}
 	],
 	"settings": {}
