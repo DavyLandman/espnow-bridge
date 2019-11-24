@@ -1,4 +1,4 @@
-module github.com/DavyLandman/espnow-bridge
+module github.com/DavyLandman/espnow-bridge/go-bridge
 
 go 1.12
 

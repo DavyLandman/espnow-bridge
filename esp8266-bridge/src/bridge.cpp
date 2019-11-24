@@ -31,7 +31,7 @@ struct PACKED AddPeer {
     uint8_t wifi_channel;
 };
 
-struct PACKED RecieveMessage {
+struct PACKED ReceivedMessage {
     uint8_t marker[2];
     uint8_t src_mac[6];
     uint16_t crc;
@@ -48,7 +48,7 @@ FastCRC16 CRC16;
 
 static void msg_recv_cb(uint8_t *mac_addr, uint8_t *data, uint8_t len) {
     if (connection_live) {
-        struct RecieveMessage msg;
+        struct ReceivedMessage msg;
         msg.marker[0] = RECV_MESSAGE[0];
         msg.marker[1] = RECV_MESSAGE[1];
         msg.src_mac[0] = mac_addr[0];
@@ -72,19 +72,6 @@ void setup() {
     WiFi.mode(WIFI_AP);
     WiFi.disconnect();
 
-    if (esp_now_init() != ESP_OK) {
-        Serial.println("! init failed");
-        return;
-    }
-    if (esp_now_set_self_role(ESP_NOW_ROLE_SLAVE) != ESP_OK) {
-        Serial.println("! Could not set myself up as a receiver");
-        return;
-    }
-    if (esp_now_register_recv_cb(&msg_recv_cb) != ESP_OK) {
-        Serial.println("! failure adding receive handler");
-        return;
-    }
-    Serial.println("# ESP-now initialized");
 }
 
 static uint8_t recv_buffer[4 * 1024];
@@ -103,10 +90,7 @@ void loop() {
     }
     else {
         // clear buffer, we are running out of space, someone is sending us strange bytes
-        buffer_read = recv_buffer;
-        buffer_filled = recv_buffer;
-        connection_live = false;
-        Serial.println("ERROR RESET"); // write some unexpected bytes to crash the connection
+        ESP.restart();
     }
     if (AVAILABLE >= 2) {
         if (!connection_live) {
@@ -118,17 +102,17 @@ void loop() {
                     break; // wait for more bytes
                 }
                 struct SendMessage *msg = (struct SendMessage*)(void*)(buffer_read + sizeof(SEND_MESSAGE));
-                const uint8_t *msg_data = (u8*) buffer_read + sizeof(SEND_MESSAGE) + sizeof(struct SendMessage);
-                if (buffer_filled < msg_data + msg->size) {
+                if (AVAILABLE > (sizeof(SEND_MESSAGE) + sizeof(struct SendMessage) + msg->size)) {
                     break; // wait for more bytes
                 }
+                const uint8_t *msg_data = (u8*) buffer_read + sizeof(SEND_MESSAGE) + sizeof(struct SendMessage);
                 uint16_t msg_crc = CRC16.xmodem(msg_data, msg->size);
                 if (msg_crc != ((uint16_t)msg->crc16_low) | (((uint16_t)msg->crc16_high) << 8)) {
                     // connection corruption, reset the esp!
                     ESP.restart();
                 }
                 // we can process data now
-                esp_now_send(msg->dst_mac, msg_data, msg->size);
+                esp_now_send(msg->dst_mac, (u8*)msg_data, msg->size);
                 buffer_read += msg->size + sizeof(SEND_MESSAGE) + sizeof(struct SendMessage);
             }
             else if (match_message(ADD_PEER, buffer_read)) {
@@ -139,12 +123,9 @@ void loop() {
                 esp_now_add_peer(msg->dst_mac, ESP_NOW_ROLE_CONTROLLER, msg->wifi_channel, NULL, 0);
                 buffer_read += sizeof(ADD_PEER) + sizeof(struct AddPeer);
             }
-            else if (match_message(CONNECT_BRIDGE, buffer_read)) {
-                handleConnect();
-            }
             else {
-                // strange message 
-                buffer_read += 2;
+                // strange message, reset the ESP
+                ESP.restart();
             }
         }
         if (buffer_read == buffer_filled) {
@@ -164,23 +145,23 @@ static void handleConnect() {
             Serial.write(GET_PEERS, sizeof(GET_PEERS));
             connection_live = true;
             buffer_read += sizeof(CONNECT_BRIDGE);
+
+            if (esp_now_init() != ESP_OK) {
+                Serial.println("! init failed");
+                return;
+            }
+            if (esp_now_set_self_role(ESP_NOW_ROLE_SLAVE) != ESP_OK) {
+                Serial.println("! Could not set myself up as a receiver");
+                return;
+            }
+            if (esp_now_register_recv_cb(&msg_recv_cb) != ESP_OK) {
+                Serial.println("! failure adding receive handler");
+                return;
+            }
         }
         else {
             // strange message received, lets skip over it
             buffer_read += 2;
-        }
-    }
-}
-
-static void waitForConnect() {
-    for (const uint8_t* scanner = buffer_read; scanner + sizeof(CONNECT_BRIDGE) < buffer_filled; scanner++) {
-        if (match_message(CONNECT_BRIDGE, scanner) && match_message(CONNECT_BRIDGE + 2, scanner + 2)) {
-            // found a match for init
-            Serial.write(header, sizeof(header));
-            // now we send the request to get the current peers
-            Serial.write(GET_PEERS, sizeof(GET_PEERS));
-            connection_live = true;
-            buffer_read = scanner + sizeof(CONNECT_BRIDGE);
         }
     }
 }

@@ -53,8 +53,8 @@ func (b Bridge) Close() error {
 }
 
 func (b Bridge) AddPeer(mac [6]byte, wifiChannel uint8) error {
-	if len(b.peers) > 30 {
-		return errors.New("ESP 8266 cannot handle more than 30 peers")
+	if len(b.peers) >= 20 {
+		return errors.New("ESP8266 can handle only 19 peers, remove peers first")
 	}
 	newPeer := peer{wifiChannel: wifiChannel}
 	copy(newPeer.mac[:], mac[:])
@@ -217,6 +217,9 @@ func writeBytes(b *Bridge, box <-chan Message, reset <-chan bool, sendPeers <-ch
 	for {
 		select {
 		case msg := <-box:
+			if len(msg.Data) > 250 {
+				log.Fatal("Should not send more than 250 bytes, esp-now can not handle that")
+			}
 			assureWritten(b.connection, sendMessage)
 			assureWritten(b.connection, msg.Mac[:])
 			crc := crcFunction.CalculateCRC(msg.Data)
