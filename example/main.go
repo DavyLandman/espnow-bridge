@@ -1,7 +1,7 @@
 package main
 
 import (
-	espnow "github.com/DavyLandman/espnow-bridge/go-bridge"
+	espnow "github.com/DavyLandman/espnow-bridge"
 	"log"
 	"time"
 )

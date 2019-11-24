@@ -3,11 +3,13 @@ package bridge
 import (
 	"bytes"
 	"errors"
-	"github.com/snksoft/crc"
-	"go.bug.st/serial.v1"
 	"io"
 	"log"
+	"runtime"
 	"time"
+
+	"github.com/snksoft/crc"
+	"go.bug.st/serial.v1"
 )
 
 type Message struct {
@@ -28,7 +30,7 @@ type Bridge struct {
 	Outbox     chan<- Message
 }
 
-func (b Bridge) Connect(portName string) error {
+func (b *Bridge) Connect(portName string) error {
 	if b.connection == nil {
 		mode := &serial.Mode{
 			BaudRate: 460800,
@@ -47,7 +49,7 @@ func (b Bridge) Connect(portName string) error {
 	return errors.New("Already initialized")
 }
 
-func (b Bridge) Close() error {
+func (b *Bridge) Close() error {
 	if b.connection != nil {
 		close(b.Outbox)
 		b.connection.Close()
@@ -56,7 +58,7 @@ func (b Bridge) Close() error {
 	return nil
 }
 
-func (b Bridge) AddPeer(mac [6]byte, wifiChannel uint8) error {
+func (b *Bridge) AddPeer(mac [6]byte, wifiChannel uint8) error {
 	if len(b.peers) >= 20 {
 		return errors.New("ESP8266 can handle only 19 peers, remove peers first")
 	}
@@ -66,7 +68,7 @@ func (b Bridge) AddPeer(mac [6]byte, wifiChannel uint8) error {
 	return nil
 }
 
-func (b Bridge) RemovePeer(mac [6]byte) {
+func (b *Bridge) RemovePeer(mac [6]byte) {
 	// find peer
 	peerIndex := -1
 	for i := 0; i < len(b.peers); i++ {
@@ -93,10 +95,12 @@ func (b Bridge) WaitForConnected(maxWait time.Duration) {
 	}
 }
 
-func (b Bridge) setupBridge() error {
+func (b *Bridge) setupBridge() error {
 	if b.connection == nil {
 		panic("setup called without a connection")
 	}
+	b.connection.Write([]byte{0x00, 0x00, 0x00, 0x00, 0x00}) // wrong data to cause a reset of the arduino bridge code
+	time.Sleep(100 * time.Millisecond)                       // wait for restart
 	bytesRead := make(chan byte, 1024)
 	inbox := make(chan Message, 64)
 	outbox := make(chan Message, 64)
@@ -104,12 +108,10 @@ func (b Bridge) setupBridge() error {
 	sendPeers := make(chan bool)
 	go readBytes(b.connection, bytesRead)
 	go reassembleMessages(bytesRead, &b.active, reset, sendPeers, inbox)
-	go writeBytes(&b, outbox, reset, sendPeers)
+	go writeBytes(b, outbox, reset, sendPeers)
 
-	b.connection.Write([]byte{0x00, 0x00, 0x00}) // wrong data to cause a reset of the arduino bridge code
-	time.Sleep(100 * time.Millisecond)           // wait for restart
-	reset <- true                                // start of with a reset
-
+	reset <- true // start of with a reset
+	reset <- true // start of with a reset
 	b.Inbox = inbox
 	b.Outbox = outbox
 	return nil
@@ -149,6 +151,7 @@ func reassembleMessages(input <-chan byte, active *bool, reset chan<- bool, send
 
 	defer close(output)
 	for {
+		runtime.Gosched()
 		if !*active {
 			log.Println("Waiting for connection to bridge")
 			reset <- true
@@ -164,7 +167,7 @@ func reassembleMessages(input <-chan byte, active *bool, reset chan<- bool, send
 					} else {
 						detected = 0
 					}
-				case <-time.After(10 * time.Second):
+				case <-time.After(2 * time.Second):
 					log.Println("Sending reset again")
 					reset <- true
 				}
@@ -199,6 +202,7 @@ func reassembleMessages(input <-chan byte, active *bool, reset chan<- bool, send
 				Data: data,
 			}
 			copy(msg.Mac[:], mac)
+			//log.Printf("Received new message: %v", msg)
 			output <- msg
 		case header[0] == 0x44 && header[1] == 0x33:
 			// request to get all peers (restart of the node for example)
@@ -231,6 +235,7 @@ func writeBytes(b *Bridge, box <-chan Message, reset <-chan bool, sendPeers <-ch
 	crcFunction := crc.NewHashWithTable(crc.NewTable(crc.XMODEM))
 
 	for {
+		runtime.Gosched()
 		if !b.active {
 			// let's wait for a new connection before we start sending data
 			// we do handle resets, since it might be a stuck handshake
