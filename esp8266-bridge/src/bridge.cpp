@@ -71,14 +71,27 @@ void setup() {
     Serial.println("# Booted, setting up ESP-NOW");
     WiFi.mode(WIFI_AP);
     WiFi.disconnect();
+    pinMode(LED_BUILTIN, OUTPUT);     // Initialize the LED_BUILTIN pin as an output
+    digitalWrite(LED_BUILTIN, HIGH);
 
+    if (esp_now_init() != ESP_OK) {
+        Serial.println("! init failed");
+        return;
+    }
+    if (esp_now_set_self_role(ESP_NOW_ROLE_SLAVE) != ESP_OK) {
+        Serial.println("! Could not set myself up as a receiver");
+        return;
+    }
+    if (esp_now_register_recv_cb(&msg_recv_cb) != ESP_OK) {
+        Serial.println("! failure adding receive handler");
+        return;
+    }
 }
 
 static uint8_t recv_buffer[4 * 1024];
 static const uint8_t *buffer_read = recv_buffer;
 static uint8_t *buffer_filled = recv_buffer;
 
-static void handleConnect();
 static void handleWaitForConnect();
 
 #define AVAILABLE ((uintptr_t)(buffer_filled - buffer_read))
@@ -107,7 +120,7 @@ void loop() {
                 }
                 const uint8_t *msg_data = (u8*) buffer_read + sizeof(SEND_MESSAGE) + sizeof(struct SendMessage);
                 uint16_t msg_crc = CRC16.xmodem(msg_data, msg->size);
-                if (msg_crc != ((uint16_t)msg->crc16_low) | (((uint16_t)msg->crc16_high) << 8)) {
+                if (msg_crc != (((uint16_t)msg->crc16_low) | (((uint16_t)msg->crc16_high) << 8))) {
                     // connection corruption, reset the esp!
                     ESP.restart();
                 }
@@ -123,6 +136,10 @@ void loop() {
                 esp_now_add_peer(msg->dst_mac, ESP_NOW_ROLE_CONTROLLER, msg->wifi_channel, NULL, 0);
                 buffer_read += sizeof(ADD_PEER) + sizeof(struct AddPeer);
             }
+            else if (match_message(CONNECT_BRIDGE, buffer_read)) {
+                // the handshake can get multiple messages, so just skip them
+                buffer_read += 2;
+            }
             else {
                 // strange message, reset the ESP
                 ESP.restart();
@@ -136,32 +153,18 @@ void loop() {
     }
 }
 
-static void handleConnect() {
-    if (AVAILABLE >= 4) {
-        if (match_message(CONNECT_BRIDGE + 2, buffer_read + 2)) {
-            // we got a new connection, so lets send the welcome
+static void handleWaitForConnect() {
+    for (const uint8_t* scanner = buffer_read; scanner + sizeof(CONNECT_BRIDGE) < buffer_filled; scanner++) {
+        if (match_message(CONNECT_BRIDGE, scanner) && match_message(CONNECT_BRIDGE + 2, scanner + 2)) {
+            // found a match for init
             Serial.write(header, sizeof(header));
             // now we send the request to get the current peers
+            buffer_read = scanner + sizeof(CONNECT_BRIDGE);
             Serial.write(GET_PEERS, sizeof(GET_PEERS));
+            digitalWrite(LED_BUILTIN, LOW);
+            delay(2000); 
             connection_live = true;
-            buffer_read += sizeof(CONNECT_BRIDGE);
-
-            if (esp_now_init() != ESP_OK) {
-                Serial.println("! init failed");
-                return;
-            }
-            if (esp_now_set_self_role(ESP_NOW_ROLE_SLAVE) != ESP_OK) {
-                Serial.println("! Could not set myself up as a receiver");
-                return;
-            }
-            if (esp_now_register_recv_cb(&msg_recv_cb) != ESP_OK) {
-                Serial.println("! failure adding receive handler");
-                return;
-            }
-        }
-        else {
-            // strange message received, lets skip over it
-            buffer_read += 2;
+            break;
         }
     }
 }

@@ -32,6 +32,9 @@ func (b Bridge) Connect(portName string) error {
 	if b.connection == nil {
 		mode := &serial.Mode{
 			BaudRate: 460800,
+			DataBits: 8,
+			Parity:   serial.NoParity,
+			StopBits: serial.OneStopBit,
 		}
 		con, err := serial.Open(portName, mode)
 		if err != nil {
@@ -103,6 +106,10 @@ func (b Bridge) setupBridge() error {
 	go reassembleMessages(bytesRead, &b.active, reset, sendPeers, inbox)
 	go writeBytes(&b, outbox, reset, sendPeers)
 
+	b.connection.Write([]byte{0x00, 0x00, 0x00}) // wrong data to cause a reset of the arduino bridge code
+	time.Sleep(100 * time.Millisecond)           // wait for restart
+	reset <- true                                // start of with a reset
+
 	b.Inbox = inbox
 	b.Outbox = outbox
 	return nil
@@ -118,6 +125,7 @@ func readBytes(source io.ReadWriteCloser, output chan<- byte) {
 			return
 		}
 		for i := 0; i < n; i++ {
+			//log.Printf("Received: %x (%c)", buf[i], buf[i])
 			output <- buf[i]
 		}
 	}
