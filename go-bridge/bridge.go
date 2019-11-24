@@ -22,6 +22,7 @@ type peer struct {
 
 type Bridge struct {
 	connection io.ReadWriteCloser
+	active     bool
 	peers      []peer
 	Inbox      <-chan Message
 	Outbox     chan<- Message
@@ -79,6 +80,16 @@ func (b Bridge) RemovePeer(mac [6]byte) {
 	}
 }
 
+func (b Bridge) WaitForConnected(maxWait time.Duration) {
+	end := time.Now().Add(maxWait)
+	for end.Before(time.Now()) {
+		if b.active {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func (b Bridge) setupBridge() error {
 	if b.connection == nil {
 		panic("setup called without a connection")
@@ -89,7 +100,7 @@ func (b Bridge) setupBridge() error {
 	reset := make(chan bool)
 	sendPeers := make(chan bool)
 	go readBytes(b.connection, bytesRead)
-	go reassembleMessages(bytesRead, reset, sendPeers, inbox)
+	go reassembleMessages(bytesRead, &b.active, reset, sendPeers, inbox)
 	go writeBytes(&b, outbox, reset, sendPeers)
 
 	b.Inbox = inbox
@@ -124,14 +135,13 @@ func getBytes(input <-chan byte, len int) ([]byte, bool) {
 	return result, true
 }
 
-func reassembleMessages(input <-chan byte, reset chan<- bool, sendPeers chan<- bool, output chan<- Message) {
+func reassembleMessages(input <-chan byte, active *bool, reset chan<- bool, sendPeers chan<- bool, output chan<- Message) {
 	activationHeader := [...]byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77}
 	crcFunction := crc.NewHashWithTable(crc.NewTable(crc.XMODEM))
 
-	var active = false
 	defer close(output)
 	for {
-		if !active {
+		if !*active {
 			log.Println("Waiting for connection to bridge")
 			reset <- true
 			var detected = 0
@@ -152,7 +162,7 @@ func reassembleMessages(input <-chan byte, reset chan<- bool, sendPeers chan<- b
 				}
 			}
 			log.Println("Bridge connected")
-			active = true
+			*active = true
 		}
 		header, running := getBytes(input, 2)
 		if !running {
@@ -175,7 +185,7 @@ func reassembleMessages(input <-chan byte, reset chan<- bool, sendPeers chan<- b
 			dataCRC := crcFunction.CalculateCRC(data)
 			if (uint16(crc[0]) | (uint16(crc[1]) << 8)) != uint16(dataCRC) {
 				log.Println("Resetting stream due to crc failure")
-				active = false
+				*active = false
 				continue
 			}
 			log.Println("Posting new message")
@@ -190,7 +200,7 @@ func reassembleMessages(input <-chan byte, reset chan<- bool, sendPeers chan<- b
 			sendPeers <- true
 		default:
 			log.Printf("Resetting stream due to unexpected message header %v\n", header)
-			active = false
+			*active = false
 			continue
 		}
 	}
@@ -215,6 +225,17 @@ func writeBytes(b *Bridge, box <-chan Message, reset <-chan bool, sendPeers <-ch
 	crcFunction := crc.NewHashWithTable(crc.NewTable(crc.XMODEM))
 
 	for {
+		if !b.active {
+			// let's wait for a new connection before we start sending data
+			// we do handle resets, since it might be a stuck handshake
+			select {
+			case <-reset:
+				assureWritten(b.connection, resetMessage)
+			case <-time.After(100 * time.Millisecond):
+				continue
+			}
+			continue
+		}
 		select {
 		case msg := <-box:
 			if len(msg.Data) > 250 {
@@ -226,8 +247,10 @@ func writeBytes(b *Bridge, box <-chan Message, reset <-chan bool, sendPeers <-ch
 			assureWritten(b.connection, []byte{uint8(crc & 0xFF), uint8((crc >> 8) & 0xFF)})
 			assureWritten(b.connection, []byte{uint8(len(msg.Data))})
 			assureWritten(b.connection, msg.Data)
+
 		case <-reset:
 			assureWritten(b.connection, resetMessage)
+
 		case <-sendPeers:
 			for _, p := range b.peers {
 				assureWritten(b.connection, addPeer)
