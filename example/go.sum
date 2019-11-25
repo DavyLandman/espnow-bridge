@@ -1,5 +1,5 @@
-github.com/DavyLandman/espnow-bridge v1.2.0 h1:N+jHo0dYoemHSE1XrT4zPHcQj+aqDcGIJ05ENSQjovY=
-github.com/DavyLandman/espnow-bridge v1.2.0/go.mod h1:6Mg2dAsoIFwi3v0+RYxrPOGderaRk5wUZFzMtr6PqEA=
+github.com/DavyLandman/espnow-bridge v0.3.0 h1:+uePf6TQTbNAWs2buR88+A0fP1Q1OD9g7JMjZg46OiY=
+github.com/DavyLandman/espnow-bridge v0.3.0/go.mod h1:6Mg2dAsoIFwi3v0+RYxrPOGderaRk5wUZFzMtr6PqEA=
 github.com/snksoft/crc v1.1.0 h1:HkLdI4taFlgGGG1KvsWMpz78PkOC9TkPVpTV/cuWn48=
 github.com/snksoft/crc v1.1.0/go.mod h1:5/gUOsgAm7OmIhb6WJzw7w5g2zfJi4FrHYgGPdshE+A=
 go.bug.st/serial.v1 v0.0.0-20180827123349-5f7892a7bb45 h1:mACY1anK6HNCZtm/DK2Rf2ZPHggVqeB0+7rY9Gl6wyI=

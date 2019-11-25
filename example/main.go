@@ -1,9 +1,11 @@
 package main
 
 import (
-	espnow "github.com/DavyLandman/espnow-bridge"
 	"log"
+	"os"
 	"time"
+
+	espnow "github.com/DavyLandman/espnow-bridge"
 )
 
 func printMessages(msgQue <-chan espnow.Message) {
@@ -15,7 +17,7 @@ func printMessages(msgQue <-chan espnow.Message) {
 func main() {
 	br := new(espnow.Bridge)
 	defer br.Close()
-	if err := br.Connect("COM4"); err != nil {
+	if err := br.Connect(os.Args[1]); err != nil {
 		log.Fatal(err)
 	}
 	br.WaitForConnected(10 * time.Second)
